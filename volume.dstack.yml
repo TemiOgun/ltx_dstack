@@ -1,0 +1,8 @@
+type: volume
+name: ltx-volume
+
+backend: runpod
+region: CA-MTL-1
+
+# Required size
+size: 100GB

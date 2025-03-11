@@ -1,0 +1,111 @@
+# dstack.yaml for Q8 LTX-Video
+# Main configuration file for deploying Q8 LTX-Video API with dstack
+
+# Define the project name
+project: ltx-video-q8-api
+
+
+# Configure workflow for deploying the LTX-Video API
+workflows:
+  deploy-api:
+    # Define the resources required for the API - reduced VRAM needs with Q8
+    resources:
+      gpu: T4:1  # Can use smaller GPUs thanks to Q8 optimization (T4 has 16GB VRAM)
+      memory: 16GB
+      disk: 100GB
+    
+    # Define environment variables
+    env:
+      LTX_VIDEO_API_KEY: ${SECRETS.API_KEY}
+      LTX_VIDEO_CKPT_PATH: /data/models/ltx_video_q8_model.safetensors
+      PORT: 8000
+      LOW_VRAM: "true"  # Enable low VRAM mode for Q8
+      TRANSFORMER_TYPE: "q8_kernels"  # Specify Q8 kernel usage
+    
+    # Mount a persistent volume for model storage
+    volumes:
+      - name: ltx-volume
+      path: /data
+    # Define commands to set up the environment and start the API
+    commands:
+      # Clone repository or copy files
+      - mkdir -p /app
+      - cd /app
+      
+      # Install system dependencies
+      - apt-get update
+      - apt-get install -y python3-pip python3-dev ffmpeg git wget
+      
+      # Install Python dependencies
+      - pip install torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+      - pip install fastapi uvicorn python-multipart pillow imageio numpy pydantic
+      - pip install transformers diffusers
+      
+      # Install q8_kernels
+      - pip install git+https://github.com/KONAKONA666/q8_kernels.git
+      
+      # Clone the Q8 LTX-Video repository
+      - git clone https://github.com/KONAKONA666/LTX-Video.git /app/LTX-Video
+      - cd /app/LTX-Video && python -m pip install -e .\[inference-script\]
+      
+      # Download the Q8 model and other required components
+      - mkdir -p /data/models
+      - echo "Downloading model components, this may take a while..."
+      - |
+        # Download Q8 transformer model
+        if [ ! -f /data/models/ltx_video_q8_model.safetensors ]; then
+          echo "Downloading Q8 transformer model..."
+          python -c "from huggingface_hub import snapshot_download; snapshot_download('konakona/ltxvideo_q8', local_dir='/data/models/transformer', local_dir_use_symlinks=False, repo_type='model')"
+          echo "Q8 transformer model download completed"
+        else
+          echo "Q8 transformer model already exists, skipping download"
+        fi
+        
+        # Download required components from original repo (scheduler, text_encoder, vae)
+        if [ ! -d "/data/models/vae" ] || [ ! -d "/data/models/text_encoder" ] || [ ! -d "/data/models/scheduler" ]; then
+          echo "Downloading additional components from original repo..."
+          python -c "from huggingface_hub import snapshot_download; snapshot_download('Lightricks/LTX-Video', local_dir='/data/models', local_dir_use_symlinks=False, repo_type='model', allow_patterns=['scheduler/*', 'text_encoder/*', 'vae/*'])"
+          echo "Additional components downloaded"
+        else
+          echo "Additional components already exist, skipping download"
+        fi
+        
+        # Create symbolic link for transformer model in main folder
+        if [ ! -f /data/models/ltx_video_q8_model.safetensors ]; then
+          ln -sf /data/models/transformer/ltx_video_q8_model.safetensors /data/models/ltx_video_q8_model.safetensors
+          echo "Symbolic link created for transformer model"
+        fi
+      
+      # Create required directories for API server
+      - mkdir -p /data/outputs /data/static /data/temp_uploads
+      
+      # Copy API server code
+      - cp ${ARTIFACTS.ltx_video_api_py} /app/ltx_video_api.py
+      
+      # Run the API server with persistent volumes
+      - cd /app && python3 ltx_video_api.py
+    
+    # Define the port mapping for the API
+    port: 8000
+    
+    # Define artifacts to be uploaded or downloaded
+    artifacts:
+      # The API code
+      ltx_video_api_py: ltx_video_api_q8.py
+    
+    # Configure replication for high availability
+    replicas: 1
+
+
+# Configuration for serving the API (making it accessible)
+serve:
+  # Define the API service
+  ltx-video-service:
+    workflow: deploy-api
+    port: 8000
+    # Configure the domain if needed
+    # domain: api.your-domain.com
+    
+    # Configure authentication (optional)
+    auth:
+      enabled: true
