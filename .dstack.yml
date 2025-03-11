@@ -6,9 +6,9 @@ name: ltx-video-q8-api  # Changed from project to name
 
 # Define the resources required for the API - reduced VRAM needs with Q8
 resources:
-  gpu: rtx4090:1  # Can use smaller GPUs thanks to Q8 optimization (T4 has 16GB VRAM)
-  memory: 16GB
-  disk: 100GB
+  gpu: "RTX 4090"  # Can use smaller GPUs thanks to Q8 optimization (T4 has 16GB VRAM)
+
+spot_policy: "on-demand"
 
 # Define environment variables
 env:
@@ -23,64 +23,44 @@ volumes:
   - name: ltx-volume
     path: /data
 
-# Define commands to set up the environment and start the API
 commands:
-  # Clone repository or copy files
-  - mkdir -p /app
-  - cd /app
-  
-  # Install system dependencies
+ # Install system dependencies
   - apt-get update
-  - apt-get install -y python3-pip python3-dev ffmpeg git wget
+  - apt-get install -y python3-pip python3-dev ffmpeg git wget curl
   
   # Install Python dependencies
-  - pip install torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+  - pip install torch==2.6.0 torchvision --index-url https://download.pytorch.org/whl/cu126
   - pip install fastapi uvicorn python-multipart pillow imageio numpy pydantic
-  - pip install transformers diffusers
+  - pip install transformers diffusers huggingface_hub
+  - pip install ninja  # Required for fast compilation
   
-  # Install q8_kernels
-  - pip install git+https://github.com/KONAKONA666/q8_kernels.git
+  # Install q8_kernels with submodules
+  - git clone https://github.com/KONAKONA666/q8_kernels /app/q8_kernels
+  - cd /app/q8_kernels && git submodule init
+  - cd /app/q8_kernels && git submodule update
+  - cd /app/q8_kernels && python setup.py install
+  - cd /app/q8_kernels && pip install .  # for utility
   
   # Clone the Q8 LTX-Video repository
-  - git clone https://github.com/KONAKONA666/LTX-Video.git /app/LTX-Video
+  - git clone https://github.com/TemiOgun/LTX-Video.git /app/LTX-Video
   - cd /app/LTX-Video && python -m pip install -e .\[inference-script\]
   
-  # Download the Q8 model and other required components
-  - mkdir -p /data/models
-  - echo "Downloading model components, this may take a while..."
-  - |
-    # Download Q8 transformer model
-    if [ ! -f /data/models/ltx_video_q8_model.safetensors ]; then
-      echo "Downloading Q8 transformer model..."
-      python -c "from huggingface_hub import snapshot_download; snapshot_download('konakona/ltxvideo_q8', local_dir='/data/models/transformer', local_dir_use_symlinks=False, repo_type='model')"
-      echo "Q8 transformer model download completed"
-    else
-      echo "Q8 transformer model already exists, skipping download"
-    fi
-    
-    # Download required components from original repo (scheduler, text_encoder, vae)
-    if [ ! -d "/data/models/vae" ] || [ ! -d "/data/models/text_encoder" ] || [ ! -d "/data/models/scheduler" ]; then
-      echo "Downloading additional components from original repo..."
-      python -c "from huggingface_hub import snapshot_download; snapshot_download('Lightricks/LTX-Video', local_dir='/data/models', local_dir_use_symlinks=False, repo_type='model', allow_patterns=['scheduler/*', 'text_encoder/*', 'vae/*'])"
-      echo "Additional components downloaded"
-    else
-      echo "Additional components already exist, skipping download"
-    fi
-    
-    # Create symbolic link for transformer model in main folder
-    if [ ! -f /data/models/ltx_video_q8_model.safetensors ]; then
-      ln -sf /data/models/transformer/ltx_video_q8_model.safetensors /data/models/ltx_video_q8_model.safetensors
-      echo "Symbolic link created for transformer model"
-    fi
-  
-  # Create required directories for API server
+  # Create directories and download models
+  - mkdir -p /data/models/transformer /data/models/vae /data/models/text_encoder /data/models/scheduler
   - mkdir -p /data/outputs /data/static /data/temp_uploads
+  - |
+    # Install huggingface_hub if not already installed
+    pip install huggingface_hub
+    
+    # Download models
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('konakona/ltxvideo_q8', local_dir='/data/models/transformer', local_dir_use_symlinks=False, repo_type='model')"
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('Lightricks/LTX-Video', local_dir='/data/models', local_dir_use_symlinks=False, repo_type='model', allow_patterns=['scheduler/*', 'text_encoder/*', 'vae/*'])"
+    
+    # Create symbolic link
+    ln -sf /data/models/transformer/ltx_video_q8_model.safetensors /data/models/ltx_video_q8_model.safetensors
   
-  # Copy API server code - Modified to use a local file or upload during apply
-  - cp ltx_video_api_q8.py /app/ltx_video_api.py
-  
-  # Run the API server with persistent volumes
-  - cd /app && python3 ltx_video_api.py
+  # Run the API server
+  - cd /app/LTX-Video && python3 ltx_video_api.py
 
 # Define the port mapping for the API
 port: 8000
